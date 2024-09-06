@@ -16,7 +16,8 @@ import argparse
 import traceback
 
 db = databaseStartUp()
-termsQueue = readTermsAndCreateQueue()
+termsQueue = readTermsAndCreateQueue('en')
+chineseTermsQueue = readTermsAndCreateQueue('cn')
 
 def countArgumentsPassed(args):
     count = 0
@@ -47,7 +48,12 @@ dispatcher = {
     'allfreeapk': allfreeapk,
     'apkfab': apkfab,
     'malavida': malavida,
-    'apkgk': apkgk 
+    'apkgk': apkgk,
+    'tencent':tencent,
+    'store360': store360,
+    'huawei':huawei,
+    'xiaomi' : xiaomi,
+    'baidu':baidu
 }
 
 def runAllSupportedWebsites():
@@ -62,7 +68,7 @@ def runAllSupportedWebsites():
     # malavida(db, termsQueue)
     # apkgk(db, termsQueue)
     for k, v in dispatcher.items():
-        dispatcher[v](db, termsQueue)
+        dispatcher[v](db, termsQueue())
     print("Finished Processing for all supported websites")
 
 def runSingleWebsite(website):

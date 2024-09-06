@@ -2,8 +2,9 @@ import dataset
 from sqlalchemy.sql import text
 from collections import defaultdict
 
-def databaseStartUp():
-    db = dataset.connect("sqlite:///database.db")
+def databaseStartUp(dbname='sqlite:///database.db'):
+    db = dataset.connect(dbname)
+    
     print("Database set up")
     return db
 
@@ -12,7 +13,7 @@ def getTable(db, tableName):
     return table
 
 def insertIntoAppDetailsTable(table, details):
-    row = table.find_one(appID = details['appID'])
+    row = table.find_one(appID = details['appID'],websiteName=details['websiteName'])
     if row == None:
         # First time entry hence, insert
         table.insert(details)

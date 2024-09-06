@@ -1,17 +1,362 @@
 from databaseUtility import *
 from utility import *
-from lxml import html
 from datetime import datetime
 import time
+import json
 import requests
 from bs4 import BeautifulSoup
-import bs4
+import base64
+import math
+import re
+import sqlite3 as sql
+import pandas as pd
 
-def apksupportTest(db, q):
-    print("Came inside apksupportTest")
+def tencent(db,q):
+    print("Crawling Tencent")
+    numberOfTerms = 0
+    while(q.empty() != True):
+        time.sleep(1)
+        word = q.get()
+        print("Starting " + word + " with queue length " + str(q.qsize()))
+        with open("crawled_tencent.txt") as file:
+            if word in file:
+                continue
+        appIDList = ""
+        #For tencent, the pns parameter is incremented by 10 in each call to return all requests for a particular query.
+        #the parameter value is base64 encoded before sending the request
+        #The loop terminates when no further results are obtained (try/except statement)
+        for count in range(0,1000,10):
+            count_bytes = str(count).encode('ascii')
+            payload = {'kw':word,'pns':base64.b64encode(count_bytes).decode('ascii'),'sid':''}
+            headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+            r = requests.get('https://android.myapp.com/myapp/searchAjax.htm', params=payload, headers=headers)
+            response = r.json()
+            currentTime = datetime.now()
+            # Create appDetailsTable in DB
+            appDetailsTable = getTable(db, 'AppDetails')
+            first = 0
+            try:
+                for item in response["obj"]["items"]:
+                    appID = item["pkgName"]
+                    fileSize = item["appDetail"]["fileSize"]
+                    apkHash = item["appDetail"]["apkMd5"]
+                    downloadURL = item["appDetail"]["apkUrl"]
+                    title = item["appDetail"]["appName"]
+                    desc = item["appDetail"]["description"]
+                    developerName = item["appDetail"]["authorName"]
+                    version = item["appDetail"]["versionName"]
+                    category = version = item["appDetail"]["categoryName"]
+                    averageRating = item["appDetail"]["averageRating"]
+                    imageLink = item["appDetail"]["iconUrl"]
+                    #savedetailsinDB
+                    insertIntoAppDetailsTable(appDetailsTable, dict(appID=appID, appName=title, downloadURL=downloadURL,
+                        desc=desc,file_size=fileSize,authorName=developerName,rating=averageRating,category=category,
+                            filehash=apkHash, imageSource=imageLink, developerName=developerName, 
+                                websiteName='android.myapp.com', createdAt=currentTime,version=version,other=str(item)))
+            except TypeError:
+                print("All results returned for query!")
+                break
+            if first != 0:
+                appIDList = appIDList + ","
+            appIDList = appIDList + appID
+            first = 1
+        # Create appIdTable & suggestionTable in DB
+        appIdTable = getTable(db, 'AppId')    
 
-def apkdlTest(db, q):
-    print("Came inside apkdlTest")
+        # Create entries for tables
+        currentTime = datetime.now()
+
+        # Enter into appIdTable
+        insertIntoAppIdTable(appIdTable, dict(word=word, appIdList = appIDList, websiteName = 'android.myapp.com', createdAt = currentTime))
+        with open("crawled_tencent.txt","a") as file:
+            file.write(word + "\n")
+
+def store360(db,q):
+    print("Crawling 360 Mobile Assistant Store")
+    # Create appDetailsTable in DB
+    appDetailsTable = getTable(db, 'AppDetails')
+    while(q.empty() != True):
+        time.sleep(1)
+        word = q.get()
+        # Time
+        currentTime = datetime.now()
+        appIDList = ""
+        first = 0
+        payload = {'kw':word}
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+        r = requests.get('http://zhushou.360.cn/search/index', params=payload, headers=headers)
+        soup = BeautifulSoup(r.text,'html.parser')
+        for number in soup.find_all('span'):
+            if number.parent.name == 'h2' and number.contents[0].isnumeric() == True:
+                numberOfResults = number.contents[0]
+        numberOfPages = math.ceil(int(numberOfResults)/15.0)
+        for page in range(numberOfPages):
+            payload = {'kw':word,'page':page}
+            headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+            r = requests.get('http://zhushou.360.cn/search/index', params=payload, headers=headers)
+            soup = BeautifulSoup(r.text,'html.parser')
+            for app in soup.find_all('a'):
+                try:
+                    if app.parent.name == 'h3':
+                        #Construct URL to fetch app details. id parameter is a generic UUID, not to be confused with app ID
+                        detailsUrl = "http://zhushou.360.cn" + str(app["href"])
+                        print(detailsUrl)
+                        id_start_pos = detailsUrl.rfind("/")
+                        id_end_pos = detailsUrl.rfind("?")
+                        id = detailsUrl[id_start_pos+1:id_end_pos]
+                        r = requests.get(detailsUrl)
+                        soup = BeautifulSoup(r.text, 'html.parser')
+
+                        #Extract details from details variable within js function on the page
+                        pattern = re.compile(r'var\sdetail\s=\s\(function',re.MULTILINE | re.DOTALL)
+                        js_details = soup.find("script",text=pattern)
+                        js_details = js_details.string
+                        match = re.search(r"\{.*(\{.*?\}).*",js_details,re.MULTILINE | re.DOTALL)
+                        details = match.group(1)
+                        #Convert to valid JSON format
+                        details = details.replace('\'','\"')
+                        #Convert to JSON object
+                        details = json.loads(details)
+                        appID = details["pname"]
+                        print(appID)
+                        md5_hash = details["filemd5"]
+
+                        #Extract remaining details from HTML content
+                        appName_end_pos = str(soup.find(id='app-name').contents[0]).rfind("</span")
+                        appName_start_pos = str(soup.find(id='app-name').contents[0]).rfind(">",0,appName_end_pos)
+                        appName = str(soup.find(id='app-name').contents[0])[appName_start_pos+1:appName_end_pos]
+                        for element in soup.find_all('span',class_ = "s-1 js-votepanel"):
+                            rating = element.contents[0]
+                        downloadUrl = "https://app.api.sj.360.cn/url/download/id/" + id + "/from/web_detail"
+                        baseInfo = soup.find_all("div",class_ = "base-info")
+                        info = BeautifulSoup(str(baseInfo), 'html.parser')
+                        metadata = list()
+                        for element in info.find_all('td'):
+                            metadata.append(element.contents[1])
+                        authorName = metadata[0]
+                        publishDate = metadata[1]
+                        version = metadata[2]
+                        osVersion = metadata[3]
+
+                        #Fetch Description
+                        #Fetch Description
+                        desc_html = soup.find("div", class_ = "breif")
+                        desc_text = desc_html.get_text()
+                        desc = re.sub(r"\n+","\n",desc_text)
+
+                        app_data = {"appID":appID, "hash": md5_hash, "App_name":appName, "rating":rating, "desc":desc,
+                                "authorName":authorName, "publishDate" : publishDate, "version":version, "downloadURL":downloadUrl}
+                        insertIntoAppDetailsTable(appDetailsTable, dict(appID=app_data["appID"], desc = app_data["desc"], appName=app_data["App_name"], rating=app_data["rating"],downloadURL=app_data["downloadURL"],
+                            version=app_data["version"],authorName=app_data["authorName"],publishDate=app_data["publishDate"], websiteName='zhushou.360.cn', createdAt=currentTime, filehash = app_data["hash"]))
+                except AttributeError as e:
+                    continue
+
+
+def baidu(db,q):
+    print("Crawling Baidu App Store")
+    # Create appDetailsTable in DB
+    appDetailsTable = getTable(db, 'AppDetails')
+    while(q.empty() != True):
+        time.sleep(1)
+        word = q.get()
+        print("Starting " + word +  " with queue length " + str(q.qsize()))
+        # Time
+        currentTime = datetime.now()
+        appIDList = ""
+        first = 0
+        payload = {'wd': word, 
+                    'data_type':'app'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+        baseUrl = 'https://shouji.baidu.com'
+
+        #Fetching URLs of apps returned in search query
+        r1 = requests.get(baseUrl + '/s', params=payload, headers=headers)
+        #soup_page = BeautifulSoup(r1.content,'html.parser',from_encoding='utf-8')
+        soup_page = BeautifulSoup(r1.content.decode('utf-8','ignore'),'html.parser')
+        soup_apps = soup_page.find_all('div',class_='app')
+        if len(soup_apps) == 0:
+            continue
+        appUrls = []
+        for app in soup_apps:
+            appUrls.append(baseUrl + app.find('a')['href'])
+        try:
+            #Parsing details for each returned app by visiting link
+            for detailsUrl in appUrls:
+                r2 = requests.get(detailsUrl,headers=headers)
+                #soup = BeautifulSoup(r2.text,'lxml')
+                soup = BeautifulSoup(r2.content.decode('utf-8','ignore'),'html.parser')
+                downloads = soup.find('div',class_='detail').find('span',class_='download-num').get_text().split(':')[1][1:-3]
+                desc = soup.find('div', class_='brief-long').get_text()
+                print(desc)
+                details = soup.find('div',class_='area-one-setup').find('span')
+                downloadUrl = details['data_url']
+                appID = details['data_package']
+                # if appID in df.appID.values: //Parsing out duplicates to save time, using a pandas dataframe consisting of all currently aggregated data
+                #     print("Existing app found: " + appID)
+                #     continue
+                # else:
+                #   print("New app found: " + appID)
+                title = details['data_name']
+                print(title)
+                version = details['data_versionname']
+                fileSize = details['data_size']
+
+                insertIntoAppDetailsTable(appDetailsTable, dict(appID=appID, appName=title,
+                        desc=desc,file_size=fileSize, downloadCount = downloads, downloadURL=downloadUrl,
+                                websiteName='shouji.baidu.com', createdAt=currentTime,version=version))
+        except Exception as e:
+            print("Error getting results for the query " + word)
+            continue
+        if first != 0:
+            appIDList = appIDList + ","
+        appIDList = appIDList + appID
+        first = 1
+        # Create appIdTable & suggestionTable in DB
+        appIdTable = getTable(db, 'AppId')    
+
+        # Create entries for tables
+        currentTime = datetime.now()
+        appIdTableEntry = (word, appIDList, 'shouji.baidu.com', currentTime)
+
+        # Enter into appIdTable
+        insertIntoAppIdTable(appIdTable, dict(word=word, appIdList = appIDList, websiteName = 'shouji.baidu.com', createdAt = currentTime))
+
+def xiaomi(db,q):
+    print("Crawling Xiaomi App Store")
+    # Create appDetailsTable in DB
+    appDetailsTable = getTable(db, 'AppDetails')
+    while(q.empty() != True):
+        try:
+            time.sleep(1)
+            word = q.get()
+            print("Starting " + word +  " with queue length " + str(q.qsize()))
+            # Time
+            currentTime = datetime.now()
+            appIDList = ""
+            first = 0
+            payload = {'keywords': word}
+            headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+            baseUrl = 'https://app.mi.com'
+
+            #Fetching URLs of apps returned in search query
+            try:
+                r1 = requests.get(baseUrl + '/search', params=payload, headers=headers,timeout=10)
+            except Exception as e:
+                continue
+            soup_page = BeautifulSoup(r1.text,'html.parser')
+            soup_page2 = soup_page.find_all('div',class_='applist-wrap')
+            appUrls = []
+            for link in soup_page2[0].find_all('a'):
+                if 'details' in link.get('href'):
+                    appUrls.append(baseUrl + link.get('href'))
+
+            #Removing duplicates from list
+            appUrls = list(dict.fromkeys(appUrls))
+
+            #Parsing details for each returned app by visiting link
+            for detailsUrl in appUrls:
+                r2 = requests.get(detailsUrl,headers=headers)
+                soup = BeautifulSoup(r2.text,'html.parser')
+                title = soup.find('div',class_='app-info').h3.get_text().strip()
+                desc = soup.find('div',class_='app-text').get_text()
+                soup_details = soup.find_all('div',class_='float-left')
+                appId = soup_details[3].find_all('div')[1].get_text().strip()
+                fileSize = soup_details[0].find_all('div')[1].get_text().strip()
+                version = soup_details[1].find_all('div')[1].get_text().strip()
+                releaseDate = soup_details[2].find_all('div')[1].get_text().strip()
+
+                insertIntoAppDetailsTable(appDetailsTable, dict(appID=appId, appName=title,
+                        desc=desc,file_size=fileSize, publishDate = releaseDate,
+                                websiteName='appgallery.mi.com', createdAt=currentTime,version=version))
+
+                if first != 0:
+                    appIDList = appIDList + ","
+                appIDList = appIDList + appId
+                first = 1
+            # Create appIdTable & suggestionTable in DB
+            appIdTable = getTable(db, 'AppId')    
+
+            # Create entries for tables
+            currentTime = datetime.now()
+            appIdTableEntry = (word, appIDList, 'app.mi.com', currentTime)
+
+            # Enter into appIdTable
+            insertIntoAppIdTable(appIdTable, dict(word=word, appIdList = appIDList, websiteName = 'app.mi.com', createdAt = currentTime))
+        except requests.exceptions.ConnectionError:
+            print("Timeout Error. Skipping word " + word)
+            continue
+
+def huawei(db,q):
+    print("Crawling Huawei AppGallery App Store")
+    # Create appDetailsTable in DB
+    appDetailsTable = getTable(db, 'AppDetails')
+    while(q.empty() != True):
+        time.sleep(1)
+        word = q.get()
+        print("Starting " + word +  " with queue length " + str(q.qsize()))
+        # Time
+        currentTime = datetime.now()
+        appIDList = ""
+        first = 0
+
+        payload = {'method':'internal.getTabDetail',
+                    'serviceType':20,
+                    'reqPageNum':1,
+                    'uri':'searchApp|' + word,
+                    'maxResults' : 25,
+                    'version':'10.0.0',
+                    'zone':'',
+                    'locale':'cn'
+                    }
+
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
+        url = 'https://web-dra.hispace.dbankcloud.cn/uowap/index'
+        r = requests.get(url, params=payload, headers=headers)
+        response = r.json()
+        currentTime = datetime.now()
+        # Create appDetailsTable in DB
+        appDetailsTable = getTable(db, 'AppDetails')
+        appIDList = ""
+        first = 0
+        try:
+            for entry in response["layoutData"]:
+                for item in entry["dataList"]:
+                    appID = item["package"]
+                # if appId in df.appID.values:  //Parsing out duplicates to save time, using a pandas dataframe consisting of all currently aggregated data. 
+                # //To use this code, add the dataframe as an argument to the function definition and the function call
+                #     print("Existing app found: " + appId)
+                #     continue
+                # else:
+                #     print("New app found: " + appId)
+                    fileSize = item["fullSize"]
+                    apkHash = item["sha256"]
+                    title = item["name"]
+                    desc = item["memo"]
+                    version = item["appVersionName"]
+                    category = version = item["kindName"]
+                    averageRating = item["stars"]
+                    imageLink = item["icon"]
+                    #savedetailsinDB
+                    insertIntoAppDetailsTable(appDetailsTable, dict(appID=appID, appName=title,
+                        desc=desc,file_size=fileSize,rating=averageRating,category=category,
+                            filehash=apkHash, imageSource=imageLink,
+                                websiteName='appgallery.huawei.com', createdAt=currentTime,version=version,other=str(item)))
+        except TypeError:
+            print("All results returned for query!")
+            break
+        if first != 0:
+            appIDList = appIDList + ","
+        appIDList = appIDList + appID
+        first = 1
+        # Create appIdTable & suggestionTable in DB
+        appIdTable = getTable(db, 'AppId')    
+
+        # Create entries for tables
+        currentTime = datetime.now()
+
+        # Enter into appIdTable
+        insertIntoAppIdTable(appIdTable, dict(word=word, appIdList = appIDList, websiteName = 'appgallery.huawei.com', createdAt = currentTime))
+
 
 #Failing. Use user-agent fix
 def apksupport(db, q):
@@ -523,8 +868,12 @@ def googleQueryParser(appDetailsTable, websiteName, word):
                     appIDList = appIDList + ","
                 appIDList = appIDList + appID
                 first = 1
-                print('Extracted App')
+                print('Extracted App')  
                 currentTime = datetime.now()
                 insertIntoAppDetailsTable(appDetailsTable, dict(appID=appID, title=title, imageSource=imageSource, websiteName='apktada.com', referrer='google.com', createdAt=currentTime, stars=stars, otherData=supplementaryData))
     print('FROM GOOGLE ' + str(len(appIDList)))
     return appIDList
+
+if __name__=='__main__':
+    chineseTermsQueue = readTermsAndCreateQueue('cn')
+    db = databaseStartUp('sqlite:///database.db')

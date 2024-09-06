@@ -15,30 +15,46 @@ def commaSeparated(term):
     else:
         return term
 
-def readTermsAndCreateQueue():
+def readTermsAndCreateQueue(lang):
     termsList = []
     finalTermsList = []
-    with open('android_terms.csv','rt')as f:
-        data = csv.reader(f)
-        lineNumber = 0
-        for row in data:
+    if lang == 'en':
+        filename = 'android_terms.csv'
+        with open(filename,'rt')as f:
+            data = csv.reader(f)
+            lineNumber = 0
+            for row in data:
+                    if lineNumber >= 1:
+                        key = row[2]
+                        terms = row[3]
+                        i = 0
+                        for term in terms.split('"'):
+                            if i%2 == 0:
+                                i = i+1
+                                continue
+                            else:
+                                i = i+1
+                                termsList.append(term)
+                    else:
+                        lineNumber = lineNumber + 1
+        for term in termsList:
+            result = commaSeparated(term)
+            finalTermsList.append(result)
+    if lang == 'cn':
+        filename = 'chinese1.csv'
+        finalTermsList=[]
+        with open(filename,'rt') as f:
+            data = csv.reader(f)
+            lineNumber = 0
+            for row in data:
                 if lineNumber >= 1:
-                    key = row[2]
-                    terms = row[3]
-                    i = 0
-                    for term in terms.split('"'):
-                        if i%2 == 0:
-                            i = i+1
-                            continue
-                        else:
-                            i = i+1
-                            termsList.append(term)
+                    term = row[1]
+                    if term not in finalTermsList:
+                        finalTermsList.append(term)
                 else:
                     lineNumber = lineNumber + 1
-    for term in termsList:
-        result = commaSeparated(term)
-        finalTermsList.append(result)
-    # print("Number of elements being searched for " + str(len(finalTermsList)))
+                    
+    print("Number of elements being searched for " + str(len(finalTermsList)))
     q = Queue()
     wordSet = set()
     for term in finalTermsList:
@@ -46,7 +62,7 @@ def readTermsAndCreateQueue():
             wordSet.add(term)
     for word in wordSet:
         q.put(word)
-    # print("Queue size is initially " + str(q.qsize()))
+    print("Queue size is initially " + str(q.qsize()))
     return q
 
 def formatForGoogleSearch(word):
